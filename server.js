@@ -19,12 +19,13 @@ create table if not exists expenses(id integer primary key, day_id integer, titl
 create table if not exists debtors(id integer primary key, order_id integer, name text, amount real, paid real default 0, day_id integer, ts text);
 create table if not exists logs(id integer primary key, day_id integer, type text, detail text, amount real, user text, ts text);
 `);
+try { db.exec('alter table users add column avatar text'); } catch (e) {}
 const q = (s, ...p) => db.prepare(s).all(...p), one = (s, ...p) => db.prepare(s).get(...p), run = (s, ...p) => db.prepare(s).run(...p);
 const now = () => new Date().toISOString();
 const hash = (p, salt = crypto.randomBytes(8).toString('hex')) => salt + ':' + crypto.scryptSync(p, salt, 32).toString('hex');
 const check = (p, h) => hash(p, h.split(':')[0]) === h;
 if (!one('select id from users limit 1')) run('insert into users(name,username,pass,role) values(?,?,?,?)', 'Administrator', 'admin', hash('admin123'), 'admin');
-const defaults = { name: 'My Business', address: '', logo: '', vat_on: '0', vat_rate: '7.5', service_on: '0', service_rate: '10', cons_on: '0', cons_rate: '5' };
+const defaults = { name: 'My Business', address: '', logo: '', email: '', phone: '', whatsapp: '', website: '', login_bg: '', vat_on: '0', vat_rate: '7.5', service_on: '0', service_rate: '10', cons_on: '0', cons_rate: '5' };
 for (const [k, v] of Object.entries(defaults)) run('insert or ignore into config values(?,?)', k, v);
 const cfg = () => Object.fromEntries(q('select * from config').map(r => [r.k, r.v]));
 const day = () => one('select * from days where closed is null') || one('select * from days where id=?', run('insert into days(opened) values(?)', now()).lastInsertRowid);
@@ -35,7 +36,7 @@ function totals(o) {
   const sc = c.service_on == '1' ? base * c.service_rate / 100 : 0, cn = c.cons_on == '1' ? base * c.cons_rate / 100 : 0, vat = c.vat_on == '1' ? base * c.vat_rate / 100 : 0;
   return { items, sub, disc, sc, cn, vat, total: base + sc + cn + vat };
 }
-const full = o => o && { ...o, ...totals(o), waiter: (one('select name from users where id=?', o.waiter_id) || {}).name, cfg: (({ name, address, logo }) => ({ name, address, logo }))(cfg()) };
+const full = o => o && { ...o, ...totals(o), waiter: (one('select name from users where id=?', o.waiter_id) || {}).name, cfg: (({ name, address, logo, phone }) => ({ name, address, logo, phone }))(cfg()) };
 const log = (type, detail, amount, user) => run('insert into logs(day_id,type,detail,amount,user,ts) values(?,?,?,?,?,?)', day().id, type, detail, amount || 0, user, now());
 const openOrder = t => one("select * from orders where table_no=? and status in('open','billed') and day_id=?", t, day().id);
 
@@ -53,9 +54,10 @@ const A = ['admin'], AC = ['admin', 'cashier'], ALL = null, W = ['waiter', 'admi
 app.post('/api/login', (req, res) => {
   const u = one('select * from users where username=?', String(req.body.username || '').trim());
   if (!u || !check(String(req.body.password || ''), u.pass)) return res.status(401).json({ error: 'Wrong username or password' });
-  const token = crypto.randomBytes(24).toString('hex'), s = { id: u.id, name: u.name, role: u.role, username: u.username };
+  const token = crypto.randomBytes(24).toString('hex'), s = { id: u.id, name: u.name, role: u.role, username: u.username, avatar: u.avatar || '' };
   sessions.set(token, s); res.json({ token, user: s, cfg: (({ name, logo }) => ({ name, logo }))(cfg()) });
 });
+app.get('/api/public', (req, res) => { const c = cfg(); res.json({ name: c.name, logo: c.logo, login_bg: c.login_bg }); });
 app.get('/api/config', wrap(ALL, () => cfg()));
 app.post('/api/config', wrap(A, req => { for (const [k, v] of Object.entries(req.body)) if (k in defaults) run('insert or replace into config values(?,?)', k, String(v)); }));
 
@@ -63,7 +65,7 @@ app.post('/api/config', wrap(A, req => { for (const [k, v] of Object.entries(req
 app.get('/api/users', wrap(A, () => q('select id,name,username,role from users').map(u => ({ ...u, tables: q('select no from tables_ where waiter_id=? order by no', u.id).map(t => t.no) }))));
 app.post('/api/users', wrap(A, req => { const b = req.body; run('insert into users(name,username,pass,role) values(?,?,?,?)', b.name, b.username, hash(b.password), b.role); }));
 app.put('/api/users/:id', wrap(A, req => { const b = req.body, u = one('select * from users where id=?', req.params.id); if (!u) throw new Error('No such user'); if (u.role === 'admin' && b.role !== 'admin' && q("select id from users where role='admin'").length < 2) throw new Error('Keep at least one admin'); run('update users set name=?,username=?,role=?,pass=? where id=?', b.name, b.username, b.role, b.password ? hash(b.password) : u.pass, u.id); for (const [t, s] of sessions) if (s.id === u.id) { s.name = b.name; s.role = b.role; s.username = b.username; } }));
-app.post('/api/me', wrap(ALL, (req, u) => { run('update users set name=?, pass=coalesce(?,pass) where id=?', req.body.name || u.name, req.body.password ? hash(req.body.password) : null, u.id); u.name = req.body.name || u.name; }));
+app.post('/api/me', wrap(ALL, (req, u) => { run('update users set name=?, pass=coalesce(?,pass), avatar=coalesce(?,avatar) where id=?', req.body.name || u.name, req.body.password ? hash(req.body.password) : null, req.body.avatar || null, u.id); u.name = req.body.name || u.name; if (req.body.avatar) u.avatar = req.body.avatar; }));
 app.delete('/api/users/:id', wrap(A, req => { if (one('select role from users where id=?', req.params.id)?.role === 'admin' && q("select id from users where role='admin'").length < 2) throw new Error('Keep at least one admin'); run('delete from users where id=?', req.params.id); run('update tables_ set waiter_id=null where waiter_id=?', req.params.id); }));
 app.post('/api/users/:id/tables', wrap(A, req => { // body {tables:[1,2,3]}
   run('delete from tables_ where waiter_id=?', req.params.id);
@@ -150,6 +152,13 @@ app.post('/api/inflow', wrap(AC, (req, u) => run('insert into payments(order_id,
 app.post('/api/expenses', wrap(['admin', 'cashier', 'accountant'], (req, u) => run('insert into expenses(day_id,title,amount,user,ts) values(?,?,?,?,?)', day().id, req.body.title, +req.body.amount, u.name, now())));
 app.get('/api/recent-orders', wrap(AC, () => q("select id,table_no,status from orders where day_id=? and status='paid' order by id desc limit 50", day().id).map(full)));
 
+app.post('/api/clear', wrap(A, (req, u) => {
+  const me = one('select * from users where id=?', u.id); if (!check(String(req.body.password || ''), me.pass)) throw new Error('Wrong password');
+  const s = req.body.sections || [];
+  if (s.includes('inventory')) { run('delete from products'); run('delete from subs'); run('delete from categories'); }
+  if (s.includes('sales')) { run('delete from items'); run('delete from orders'); run('delete from debtors'); run('delete from payments where order_id is not null'); }
+  if (s.includes('transactions')) { run('delete from expenses'); run('delete from logs'); run('delete from payments where order_id is null'); }
+}));
 // ---- business day
 app.get('/api/day', wrap(ALL, () => ({ ...day(), days: q('select * from days order by id desc limit 60') })));
 app.post('/api/day/end', wrap(A, () => { const d = day(); if (q("select id from orders where status in('open','billed') and day_id=?", d.id).length) throw new Error('Settle or void all pending tables before ending the day'); run('update days set closed=? where id=?', now(), d.id); day(); }));
