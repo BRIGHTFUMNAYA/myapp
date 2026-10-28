@@ -181,4 +181,6 @@ app.get('/api/reports/:type', wrap(REP, req => {
   if (t === 'vat') return { rows: q("select id Order_No, table_no [Table] from orders where day_id=? and status='paid'", id).map(o => { const x = totals(one('select * from orders where id=?', o.Order_No)); return { ...o, Sub_Total: x.sub - x.disc, VAT: x.vat, Service: x.sc, Consumption: x.cn }; }) };
   throw new Error('Unknown report');
 }));
+app.use('/api', (req, res) => res.status(404).json({ error: 'Unknown API route' }));
+app.use((err, req, res, next) => res.status(400).json({ error: err.message }));
 app.listen(process.env.PORT || 3000, () => console.log('POS running'));
